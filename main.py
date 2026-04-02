@@ -216,9 +216,9 @@ def main(room_path, student_path):
         data = [dict(zip(columns, row)) for row in raw_data]
         workFile.toJson(data, file_path)
 
-    # sql_drop = """drop table students;
-    #             drop table rooms;"""
-    # db.exec_no_param(sql_drop)
+        sql_drop = """drop table students;
+                drop table rooms;"""
+        db.exec_no_param(sql_drop)
 
     finally:
         print("STEP 6 starting...")
