@@ -1,0 +1,232 @@
+# programm app
+import psycopg2
+from psycopg2.extras import execute_values
+import json
+import os
+
+
+class workDB:
+    # dsn = "postgresql://user:password@db:5432/mydatabase" (postgresql://user:password@host:port/dbname)
+    # currently no connection is created, it's settings for future connection
+    def __init__(self):
+        # function os.getenv read variable from environment from OS
+        self.dsn = os.getenv(
+            "DATABASE_URL", "host=db dbname=mydatabase user=user password=password"
+        )
+        self.conn = None
+
+    # connect to DB
+    def connect(self):
+        # check connection
+        if self.conn is None or self.conn.closed:
+            try:
+                self.conn = psycopg2.connect(self.dsn)
+                print("DB connection is succsessfull!")
+            except Exception as e:
+                print(f"DB connection is failed: {e}")
+                raise
+
+    # create tables, indexes (no parameters are reqiered)
+    def exec_no_param(self, query):
+        try:
+            # cursor will close automatically
+            # withot WITH: cursor = self.conn.cursor() cursor.execute() cursor.close()
+            with self.conn.cursor() as cursor:
+                cursor.execute(query)
+                self.conn.commit()  # ?
+                print("SQL run successfully!")
+        except Exception as e:
+            self.conn.rollback()
+            print(f"SQL run with error: {e}")
+            raise
+
+    # bulk insertion in DB rooms (data as parameter)
+    def insert(self, table_name, data):
+        try:
+            columns = data[0].keys()
+            column_names = ", ".join(columns)
+            query = f"INSERT INTO {table_name} ({column_names}) VALUES %s"
+            values = [
+                tuple(item[col] for col in columns) for item in data
+            ]  # [(item["id"], item["name"]) for item in data] --> list of tuples
+            with self.conn.cursor() as cur:
+                execute_values(cur, query, values)  # execute_values — bulk insertion
+                self.conn.commit()  # ?
+                print(
+                    f"Success! Table: {table_name}. Number of rows were inserted: {len(values)}"
+                )
+        except Exception as e:
+            self.conn.rollback()
+            print(f"ERROR. Rooms insertion FAILED: {e}")
+            raise
+
+    # select data
+    def fetch_data(self, query):
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(query)
+                # fetchall() take all records to python memory
+                result = cursor.fetchall()
+                print(f"Success! Number of rows were fetched: {len(result)}")
+                return result
+        except Exception as e:
+            print(f"Error during select and fetch: {e}")
+            raise
+
+    # Close connection
+    def close_conn(self):
+        if self.conn:
+            try:
+                self.conn.close()
+                print("DB connection is closed!")
+            except Exception as e:
+                print(f"Error while closing connection: {e}")
+
+
+class workFile:
+
+    # files rooms and student to DB from app/data
+    # static method can be called without an object for that class.
+    # static methods cannot modify the state of an object as they are not bound to it
+    @staticmethod  # decorator: A static method in Python is a function defined within a class that does not require access to instance-specific data (self)
+    def fromJson(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                print("Json was read successfully!")
+                return json.load(f)  # list[dict]
+        except Exception as e:
+            print(f"Error during reading Json: {e}")
+            raise
+
+    # result files from data to app/data
+    @staticmethod
+    def toJson(data, file_path):
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                # If you have a Python object, you can convert it into a JSON string by using the json.dumps() method.
+                # indent=4 for every key-value treir own row
+                # ensure_ascii=False keeps all characters
+                json.dump(data, f, indent=4, ensure_ascii=False)
+            print(f"Successfully saved results to {file_path}")
+        except Exception as e:
+            print(f"Failed to save file: {e}")
+            raise
+
+
+# here is all work combined
+def main(room_path, student_path):
+    try:
+        print("STEP 1 starting...")
+        # object db of class workDB is created, init methon runs automatically
+        db = workDB()
+        db.connect()
+
+        print("STEP 2 starting...")
+        # loading data from files
+        rooms_data = workFile.fromJson(room_path)
+        students_data = workFile.fromJson(student_path)
+
+        print("STEP 3 starting...")
+        sql_create_rooms = """CREATE TABLE IF NOT EXISTS rooms(
+                id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE); """
+        sql_create_students = """CREATE TABLE IF NOT EXISTS students(
+                id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                birthday DATE,
+                name TEXT NOT NULL,
+                room INTEGER REFERENCES rooms(ID) ,
+                sex CHAR(1)); """
+        sql_index_room = (
+            """CREATE INDEX IF NOT EXISTS idx_rooms_name ON rooms (name);"""
+        )
+        sql_index_fk_students = (
+            """CREATE INDEX IF NOT EXISTS idx_students_room_id ON students (room);"""
+        )
+
+        db.exec_no_param(sql_create_rooms)  # create rooms
+        db.exec_no_param(sql_create_students)  # create student
+        db.exec_no_param(sql_index_fk_students)  # create index FK (students)
+        db.exec_no_param(sql_index_room)  # create index room_name (rooms)
+
+        print("STEP 4 starting...")
+        # insert data to DB
+        table_name = "rooms"
+        db.insert(table_name, rooms_data)
+        table_name = "students"
+        db.insert(table_name, students_data)
+
+        print("STEP 5 starting...")
+        # List of rooms and the number of students in each of them
+        file_path = "roomsWithStudents.json"
+        query = """SELECT
+                        r.name room_name,
+                        SUM(CASE WHEN s.id IS NOT NULL THEN 1 ELSE 0 END) count_student
+                    FROM students s
+                    RIGHT JOIN rooms r ON r.ID = s.room
+                    GROUP BY r.name
+                    ORDER BY r.name
+                    ;"""
+        raw_data = db.fetch_data(query)
+        columns = ["room_name", "count_student"]
+        data = [dict(zip(columns, row)) for row in raw_data]
+        workFile.toJson(data, file_path)
+
+        # 5 rooms with the smallest average age of students
+        file_path = "roomsWithSmallestAvgAge.json"
+        query = """SELECT 
+                        r.name room_name
+                    FROM rooms r 
+                    JOIN students s ON r.ID = s.room
+                    GROUP BY r.name
+                    ORDER BY AVG(EXTRACT(YEAR FROM AGE(s.birthday))) ASC -- по возрастанию
+                    LIMIT 5
+                    ;"""
+        raw_data = db.fetch_data(query)
+        columns = ["room_name"]
+        data = [dict(zip(columns, row)) for row in raw_data]
+        workFile.toJson(data, file_path)
+
+        # 5 rooms with the largest difference in the age of students
+        file_path = "roomsWithLargestDiffAge.json"
+        query = """SELECT 
+                        r.name room_name
+                    FROM students s 
+                    JOIN rooms r ON r.ID = s.room
+                    GROUP BY r.name 
+                    ORDER BY MAX(s.birthday) - MIN(s.birthday) DESC
+                    LIMIT 5
+                    ;"""
+        raw_data = db.fetch_data(query)
+        columns = ["room_name"]
+        data = [dict(zip(columns, row)) for row in raw_data]
+        workFile.toJson(data, file_path)
+
+        # List of rooms where different-sex students live
+        file_path = "DiffSexStudents.json"
+        query = """SELECT 
+                        r.name room_name
+                    FROM rooms r 
+                    JOIN students s ON r.ID = s.room
+                    GROUP BY r.name
+                    HAVING COUNT(DISTINCT s.sex)>1
+                    ORDER BY r.name
+                    ;"""
+        raw_data = db.fetch_data(query)
+        columns = ["room_name"]
+        data = [dict(zip(columns, row)) for row in raw_data]
+        workFile.toJson(data, file_path)
+
+    # sql_drop = """drop table students;
+    #             drop table rooms;"""
+    # db.exec_no_param(sql_drop)
+
+    finally:
+        print("STEP 6 starting...")
+        db.close_conn()
+
+
+# build-in variable __name__. Next block of code runs only if I execute directly (in terminal or docker: python main.py)
+if __name__ == "__main__":
+    rooms_path = "/app/data/rooms.json"
+    students_path = "/app/data/students.json"
+    main(rooms_path, students_path)
