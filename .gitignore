@@ -1,0 +1,5 @@
+# .gitignore
+.env
+
+# Ignore the 'results' folder
+results/

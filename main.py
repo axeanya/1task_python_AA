@@ -1,18 +1,19 @@
 # programm app
 import psycopg2
 from psycopg2.extras import execute_values
+from abc import ABC, abstractmethod
 import json
 import os
+import sys
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
 
 
 class workDB:
-    # dsn = "postgresql://user:password@db:5432/mydatabase" (postgresql://user:password@host:port/dbname)
     # currently no connection is created, it's settings for future connection
     def __init__(self):
         # function os.getenv read variable from environment from OS
-        self.dsn = os.getenv(
-            "DATABASE_URL", "host=db dbname=mydatabase user=user password=password"
-        )
+        self.dsn = os.getenv("DATABASE_URL")
         self.conn = None
 
     # connect to DB
@@ -83,13 +84,15 @@ class workDB:
                 print(f"Error while closing connection: {e}")
 
 
-class workFile:
+# Base Interface
+class FileLoader(ABC):
+    @abstractmethod  # decorator
+    def load(self, file_path):
+        pass
 
-    # files rooms and student to DB from app/data
-    # static method can be called without an object for that class.
-    # static methods cannot modify the state of an object as they are not bound to it
-    @staticmethod  # decorator: A static method in Python is a function defined within a class that does not require access to instance-specific data (self)
-    def fromJson(file_path):
+
+class JsonLoader(FileLoader):
+    def load(self, file_path):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 print("Json was read successfully!")
@@ -98,23 +101,66 @@ class workFile:
             print(f"Error during reading Json: {e}")
             raise
 
-    # result files from data to app/data
-    @staticmethod
-    def toJson(data, file_path):
+
+# Base Interface
+class FileSaver(ABC):
+    @abstractmethod
+    def save(self, data, file_path):
+        pass
+
+
+# result files from data to app/data
+class JsonSaver(FileSaver):
+    def save(self, data, file_path):
+        full_path = f"{file_path}.json"
         try:
             with open(file_path, "w", encoding="utf-8") as f:
                 # If you have a Python object, you can convert it into a JSON string by using the json.dumps() method.
                 # indent=4 for every key-value treir own row
                 # ensure_ascii=False keeps all characters
                 json.dump(data, f, indent=4, ensure_ascii=False)
-            print(f"Successfully saved results to {file_path}")
+            print(f"Successfully saved results to {full_path}")
         except Exception as e:
             print(f"Failed to save file: {e}")
             raise
 
 
+class XmlSaver(FileSaver):
+    def save(self, data, file_path):
+        full_path = f"{file_path}.xml"
+        try:
+            # Create the top-level container
+            root = ET.Element("root")
+
+            # Loop through your list of dictionaries
+            for item in data:
+                # Create a tag for each object
+                row = ET.SubElement(root, "item")
+
+                # Add each key-value pair as a nested tag
+                for key, value in item.items():
+                    # XML tags cannot have spaces, so we replace them just in case
+                    tag_name = str(key).replace(" ", "_")
+                    child = ET.SubElement(row, tag_name)
+                    child.text = str(value)
+
+            # Make it "Pretty" (with indents like JSON)
+            xml_string = ET.tostring(root, encoding="utf-8")
+            pretty_xml = minidom.parseString(xml_string).toprettyxml(indent="    ")
+
+            # Write to file
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(pretty_xml)
+
+            print(f"Successfully saved XML results to {full_path}")
+
+        except Exception as e:
+            print(f"Failed to save XML: {e}")
+            raise
+
+
 # here is all work combined
-def main(room_path, student_path):
+def main(room_path, student_path, output_type):
     try:
         print("STEP 1 starting...")
         # object db of class workDB is created, init methon runs automatically
@@ -123,8 +169,11 @@ def main(room_path, student_path):
 
         print("STEP 2 starting...")
         # loading data from files
-        rooms_data = workFile.fromJson(room_path)
-        students_data = workFile.fromJson(student_path)
+        LOADERS = {"json": JsonLoader()}  # <--- Creating an object here
+        loader = LOADERS.get("json")
+
+        rooms_data = loader.load(room_path)
+        students_data = loader.load(student_path)
 
         print("STEP 3 starting...")
         sql_create_rooms = """CREATE TABLE IF NOT EXISTS rooms(
@@ -156,8 +205,16 @@ def main(room_path, student_path):
         db.insert(table_name, students_data)
 
         print("STEP 5 starting...")
+        SAVERS = {"json": JsonSaver(), "xml": XmlSaver()}
+        saver = SAVERS.get(output_type)
+        if saver:
+            print(f"Format {output_type} is supported")
+        else:
+            print(f"Format {output_type} is not supported. Only Json and Xml possible")
+            raise
+
         # List of rooms and the number of students in each of them
-        file_path = "roomsWithStudents.json"
+        file_path = "results/data/roomsWithStudents"
         query = """SELECT
                         r.name room_name,
                         SUM(CASE WHEN s.id IS NOT NULL THEN 1 ELSE 0 END) count_student
@@ -169,10 +226,10 @@ def main(room_path, student_path):
         raw_data = db.fetch_data(query)
         columns = ["room_name", "count_student"]
         data = [dict(zip(columns, row)) for row in raw_data]
-        workFile.toJson(data, file_path)
+        saver.save(data, file_path)
 
         # 5 rooms with the smallest average age of students
-        file_path = "roomsWithSmallestAvgAge.json"
+        file_path = "results/data/roomsWithSmallestAvgAge"
         query = """SELECT 
                         r.name room_name
                     FROM rooms r 
@@ -184,10 +241,10 @@ def main(room_path, student_path):
         raw_data = db.fetch_data(query)
         columns = ["room_name"]
         data = [dict(zip(columns, row)) for row in raw_data]
-        workFile.toJson(data, file_path)
+        saver.save(data, file_path)
 
         # 5 rooms with the largest difference in the age of students
-        file_path = "roomsWithLargestDiffAge.json"
+        file_path = "results/data/roomsWithLargestDiffAge"
         query = """SELECT 
                         r.name room_name
                     FROM students s 
@@ -199,10 +256,10 @@ def main(room_path, student_path):
         raw_data = db.fetch_data(query)
         columns = ["room_name"]
         data = [dict(zip(columns, row)) for row in raw_data]
-        workFile.toJson(data, file_path)
+        saver.save(data, file_path)
 
         # List of rooms where different-sex students live
-        file_path = "DiffSexStudents.json"
+        file_path = "results/data/DiffSexStudents"
         query = """SELECT 
                         r.name room_name
                     FROM rooms r 
@@ -214,7 +271,7 @@ def main(room_path, student_path):
         raw_data = db.fetch_data(query)
         columns = ["room_name"]
         data = [dict(zip(columns, row)) for row in raw_data]
-        workFile.toJson(data, file_path)
+        saver.save(data, file_path)
 
         sql_drop = """drop table students;
                 drop table rooms;"""
@@ -227,6 +284,17 @@ def main(room_path, student_path):
 
 # build-in variable __name__. Next block of code runs only if I execute directly (in terminal or docker: python main.py)
 if __name__ == "__main__":
-    rooms_path = "/app/data/rooms.json"
-    students_path = "/app/data/students.json"
-    main(rooms_path, students_path)
+
+    if len(sys.argv) < 4:
+        print(
+            "Error: Please provide 3 arguments: paths for rooms and students, filetype."
+        )
+        sys.exit(1)
+    else:
+        print(f"{sys.argv[1]}, {sys.argv[2]}, {sys.argv[3]}")
+
+    rooms_path = sys.argv[1]  # "/app/data/rooms.json"
+    students_path = sys.argv[2]  # "/app/data/students.json"
+    file_type = sys.argv[3]  # xml or json
+
+    main(rooms_path, students_path, file_type)
