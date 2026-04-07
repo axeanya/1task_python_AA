@@ -8,7 +8,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U user -d mydatabase" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -20,6 +20,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: python main.py /app/data/rooms.json /app/data/students.json json
+    command: python main.py /app/data/rooms.json /app/data/students.json xml
     environment:
       - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
