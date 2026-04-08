@@ -1,5 +1,9 @@
 # .gitignore
 .env
+myapp.log
 
 # Ignore the 'results' folder
 results/
+
+# ignore results of unit tests
+__pycache__/

@@ -16,7 +16,8 @@ services:
     build: .
     volumes:
       - ./data:/app/data
-      - ./results:/app/results/data
+      - ./results:/app/results
+      - .:/app
     depends_on:
       db:
         condition: service_healthy
